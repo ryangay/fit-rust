@@ -5,11 +5,11 @@ use crate::protocol::macros::get_field_value;
 use crate::protocol::message_type::MessageType;
 use crate::protocol::value::Value;
 use crate::protocol::{
-    calculate_fit_crc, DataMessage, DefinitionMessage, FitDataMessage, FitDefinitionMessage,
-    FitHeader, FitMessage, FitMessageHeader,
+    calculate_fit_crc, DataMessage, DefinitionMessage, FieldDefBaseType, FieldDescription,
+    FitDataMessage, FitDefinitionMessage, FitHeader, FitMessage, FitMessageHeader,
 };
 use binrw::{BinReaderExt, BinResult, BinWrite, Endian, Error};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::fmt::{Debug, Formatter};
 use std::fs::{read, write};
@@ -35,15 +35,13 @@ impl Fit {
         let mut cursor = Cursor::new(buf);
         let header: FitHeader = cursor.read_ne()?;
         let mut queue: VecDeque<(u8, FitDefinitionMessage)> = VecDeque::new();
+        let mut dev_field_descriptions: HashMap<(u8, u8), FieldDescription> = HashMap::new();
 
         let mut data: Vec<FitMessage> = Vec::new();
         loop {
             let message_header: FitMessageHeader = cursor.read_ne()?;
             match message_header.definition {
                 true => {
-                    if message_header.dev_fields {
-                        unimplemented!("message_header.dev_fields is unimplemented");
-                    }
                     let definition_message: DefinitionMessage =
                         cursor.read_ne_args((message_header.dev_fields,))?;
 
@@ -60,9 +58,49 @@ impl Fit {
                         None => continue,
                         Some((_, def)) => def,
                     };
-                    let data_message: DataMessage = cursor.read_ne_args((definition,))?;
+                    let data_message: DataMessage =
+                        cursor.read_ne_args((definition, &dev_field_descriptions))?;
                     if data_message.message_type == MessageType::None {
                         continue;
+                    }
+                    if data_message.message_type == MessageType::FieldDescription {
+                        // Save the developer field information
+                        let mut dev_field_description = FieldDescription {
+                            dev_data_index: 0,
+                            definition_number: 0,
+                            base_type: FieldDefBaseType::new(false, 0),
+                        };
+                        for field in data_message.values.iter() {
+                            match field.field_num {
+                                0 => {
+                                    if let Value::U8(val) = field.value {
+                                        dev_field_description.dev_data_index = val;
+                                    }
+                                }
+                                1 => {
+                                    if let Value::U8(val) = field.value {
+                                        dev_field_description.definition_number = val;
+                                    }
+                                }
+                                2 => {
+                                    let Value::U8(base_type_byte) = field.value else {
+                                        unreachable!("base_type is not a byte")
+                                    };
+                                    dev_field_description.base_type.val =
+                                        // Temp this actually needs parsing
+                                        // like FieldDefBaseType::from(base_type_byte);
+                                        base_type_byte & 31; //FIELD_DEFINITION_BASE_NUMBER;
+                                }
+                                _ => {}
+                            }
+                        }
+                        dev_field_descriptions.insert(
+                            (
+                                dev_field_description.dev_data_index,
+                                dev_field_description.definition_number,
+                            ),
+                            dev_field_description,
+                        );
                     }
                     data.push(FitMessage::Data(FitDataMessage {
                         header: message_header,

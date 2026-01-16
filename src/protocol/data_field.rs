@@ -12,10 +12,12 @@ use crate::protocol::io::{
 use crate::protocol::message_type::MessageType;
 use crate::protocol::value::Value;
 use crate::protocol::{
-    DefinitionMessage, FieldDefinition, MatchFieldTypeFn, MatchOffsetFn, MatchScaleFn,
+    DefinitionMessage, DevFieldDefinition, FieldDefinition, FieldDescription, MatchFieldTypeFn,
+    MatchOffsetFn, MatchScaleFn,
 };
 use binrw::{BinResult, Endian};
 use copyless::VecHelper;
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::io::{Read, Seek, Write};
 
@@ -44,6 +46,8 @@ impl DataField {
     pub fn parse_data_field(
         message_type: MessageType,
         fields: &Vec<FieldDefinition>,
+        dev_fields: &Option<Vec<DevFieldDefinition>>,
+        dev_field_descriptions: &HashMap<(u8, u8), FieldDescription>,
     ) -> BinResult<Vec<DataField>> {
         let mut values = Vec::with_capacity(fields.len());
         if message_type == MessageType::None {
@@ -59,6 +63,14 @@ impl DataField {
                 values
                     .alloc()
                     .init(DataField::new(fd.definition_number, data));
+            }
+            for dfd in dev_fields.as_ref().unwrap_or(&Vec::new()).iter() {
+                let field_desc = &dev_field_descriptions[&(dfd.dev_data_index, dfd.field_number)];
+                let data =
+                    DataField::read_next_field(dfd.size, field_desc.base_type.val, reader, endian);
+                values
+                    .alloc()
+                    .init(DataField::new(field_desc.definition_number, data));
             }
             // check each value in case the raw value needs further processing
             let scales = get_field_scale_fn(message_type);
@@ -360,6 +372,7 @@ impl DataField {
                     v.value.offset(o);
                 }
             }
+            FieldType::FitBaseType => {}
             f => {
                 if let Value::U8(k) = v.value {
                     if let Some(t) = get_field_string_value(f, usize::from(k)) {
